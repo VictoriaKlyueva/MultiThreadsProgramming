@@ -2,7 +2,6 @@
 #include <vector>
 #include <queue>
 #include <mutex>
-#include <ctime>
 #include <thread>
 #include <random>
 #include <condition_variable>
@@ -11,44 +10,34 @@
 using namespace std;
 
 
-struct Request {
-    int time;
-    int priority;
-    int type;
-    int group;
+int getRandomNumber(int start, int end) {
+    return rand() % (end - start + 1) + start;
+}
 
-    Request(int receivedTime, int receivedGroup) {
-        time = receivedTime;
-        group = receivedGroup;
-        type = rand() % 4;
-        priority = rand() % 4;
-    }
+struct Request {
+    int group;
+    int type;
+    int priority;
+
+    Request(int group){
+        group = group;
+        type = getRandomNumber(1, 3);
+        priority = getRandomNumber(1, 3);
+
+    };
 };
 
 struct ATM {
-    chrono::system_clock::time_point endingOfProcess; // беды с временем
     int group;
     bool isBusy;
     thread thread;
 
-    void updateStatus(Request request) {
-        isBusy = true;
-        chrono::system_clock::time_point now = chrono::system_clock::now();
-        endingOfProcess = now + chrono::seconds(request.time);
-    }
-
-    bool isFree() {
-        chrono::system_clock::time_point now = chrono::system_clock::now();
-        std::chrono::duration<double> diff = (now - endingOfProcess);
-        // cout << diff.count() << endl;
-        return diff.count() > 0;
-    }
-
     ATM() {
-        group = 0,
-        isBusy = false;
+        group = -1;
+        isBusy = -1;
     }
-    ATM(const ATM& ATM) {
+
+    ATM(const ATM& ATM){
         group = ATM.group;
         isBusy = ATM.isBusy;
     }
@@ -62,87 +51,77 @@ void fillGroups(vector<vector<ATM>>& ATMs, int groups, int ATMsNumber) {
     }
 }
 
-int getRandomTime(int startSeconds = 1, int endSeconds = 5) {
-    return rand() % (endSeconds - startSeconds + 1) + startSeconds;
+Request generateRequest(int group) {
+    Request request(group);
+    return request;
 }
 
-void ATMProcess(ATM& ATM, queue<Request>& queue, mutex& mutex, condition_variable& cv) {
+void processRequests(ATM& ATM, queue<Request>& queue, mutex& mutex, condition_variable& cv) {
     while (true) {
         unique_lock<std::mutex> lock(mutex);
 
-        // засыпаем и после обновляем статус занятости
-        if (ATM.isFree()) {
-            this_thread::sleep_for(chrono::seconds(getRandomTime()));
-            ATM.endingOfProcess = chrono::system_clock::now() - chrono::milliseconds(100);
-            ATM.isBusy = false;
-        }
-
-        // освобождаем поток и ждем пока очередь пуста или банкомат занят
-        while (queue.empty() || ATM.isBusy) {
+        while (queue.empty()) {
             cv.wait(lock);
-            /*
-                без этой штуки все таки не работает :(
-                эта строка освобождает мьютекс и приостанавливает этот поток, пока не выполнится условная перменная
-                без без этой строки поток будет работать все время и не даст  выполняться другим потокам,
-                которые с этим мьютексом работают
-             */
         }
 
         Request request = queue.front();
-        queue.pop();
 
+        queue.pop();
         lock.unlock();
 
-        // банкомат начинает работать
-        ATM.updateStatus(request);
+        ATM.isBusy = true;
+        this_thread::sleep_for(chrono::milliseconds(getRandomNumber(100, 2000)));
+        ATM.isBusy = false;
+
         cv.notify_all();
     }
 }
 
-void generator(queue<Request>& requests, mutex& mutex, condition_variable& cv, int countGroups, int maxQueueSize) {
+void generator(queue<Request>& requests, int countGroups, int maxQueueSize, mutex& mutex, condition_variable& cv) {
     int currentGroup = 0;
     while (true) {
         unique_lock<std::mutex> lock(mutex);
-
         while (requests.size() >= maxQueueSize) {
             cv.wait(lock);
+            /*
+             * без этой строчки все таки не работает :(
+             * она блокирует текущий поток на время невыполнени условия
+             * если ее убрать, текуйщий поток не даст выполняться другим потокам
+             */
         }
 
         lock.unlock();
 
-        Request request(getRandomTime(2, 5), currentGroup);
+        Request request = generateRequest(currentGroup);
+
         lock.lock();
-
         requests.push(request);
-
         lock.unlock();
+
         cv.notify_all();
 
         currentGroup = (currentGroup + 1) % countGroups;
-        this_thread::sleep_for(chrono::milliseconds(getRandomTime(300, 1000)));
-    }
-}
-
-void printStatus(int groups, int ATMsNumber, vector<vector<ATM>> ATMs, queue<Request> requests) {
-    cout << "Elements in queue: " << requests.size() << endl << endl;
-    for (int group = 0; group < groups; group++) {
-        for (int i = 0; i < ATMsNumber; i++) {
-            cout << "ATM group: " << ATMs[group][i].group << ", " << "number: " << i + 1 << endl;
-            cout << "ATM is busy now: " << ATMs[group][i].isBusy << endl;
-            if (ATMs[group][i].isBusy) {
-                // cout << "ATM will not be busy at: " << ctime(&ATMs[group][i].endingOfProcess);
-            }
-        }
-        cout << endl << endl;
+        this_thread::sleep_for(chrono::milliseconds(getRandomNumber(100, 200)));
     }
 }
 
 // завершение работы программы при нажатии ESC
 DWORD WINAPI checkEscape() {
-while (GetAsyncKeyState(VK_ESCAPE) == 0) {
+    while (GetAsyncKeyState(VK_ESCAPE) == 0) {
         this_thread::sleep_for(chrono::milliseconds(10));
     }
     exit(0);
+}
+
+void printStatus(int groups, int ATMsNumber, vector<vector<ATM>> ATMs, queue<Request>& requests) {
+    cout << "Elements in queue: " << requests.size() << endl << endl;
+    for (int group = 0; group < groups; group++) {
+        for (int i = 0; i < ATMsNumber; i++) {
+            cout << "ATM group: " << ATMs[group][i].group << ", " << "number: " << i + 1 << endl;
+            cout << "ATM is busy now: " << ATMs[group][i].isBusy << endl;
+        }
+        cout << endl << endl;
+    }
 }
 
 int main() {
@@ -160,12 +139,12 @@ int main() {
 
     for (int i = 0; i < groups; i++) {
         for (int j = 0; j < ATMsNumber; j++) {
-            ATMs[i][j].thread = thread(ATMProcess, ref(ATMs[i][j]), ref(requests), ref(mutex), ref(cv));
+            ATMs[i][j].thread = thread(processRequests, ref(ATMs[i][j]), ref(requests), ref(mutex), ref(cv));
         }
     }
 
-    thread requestGeneratorThread(generator, ref(requests), ref(mutex), ref(cv),
-                                  ref(groups), ref(storageSize));
+    thread generatorThread(generator, ref(requests), ref(groups), ref(storageSize),
+                           ref(mutex), ref(cv));
 
     // отдельный поток для обработки нажатия ESC
     HANDLE handle = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)checkEscape,
